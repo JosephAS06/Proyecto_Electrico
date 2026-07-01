@@ -147,6 +147,20 @@ regFile RF (
     .i_wb_rf_rslt(wb_write_data)
 );
 
+// Pipeline registers: capture RF read data while the current instruction is at
+// the DU stage so that EXU sees aligned data and control signals on the same cycle.
+reg [31:0] du_rs1_data_reg;
+reg [31:0] du_rs2_data_reg;
+always @(posedge clk) begin
+    if (rst) begin
+        du_rs1_data_reg <= 0;
+        du_rs2_data_reg <= 0;
+    end else begin
+        du_rs1_data_reg <= rf_rs1_data;
+        du_rs2_data_reg <= rf_rs2_data;
+    end
+end
+
 wire [31:0] exu_rs2_data;
 wire [1:0]  exu_data_size;
 wire        exu_dmem_write;
@@ -160,8 +174,8 @@ wire        exu_write_on_reg;
 exu EXU (
     .CLK          (clk),
     .RST          (rst),
-    .i_rs1_data   (rf_rs1_data),
-    .i_rs2_data   (rf_rs2_data),
+    .i_rs1_data   (du_rs1_data_reg),
+    .i_rs2_data   (du_rs2_data_reg),
     .i_pc         (du_pc),
     .i_imm        (du_imm),
     .i_is_unsigned(du_is_unsigned),
