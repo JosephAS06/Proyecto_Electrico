@@ -48,21 +48,23 @@ module wb_unit #(
  * Combinational logic
  * ---------------------------------------------------------
 */
-reg [31:0] data_2_write;
 always @(*) begin
    if (rst) begin
-      o_write_data <= 0;
-      o_rd_addr    <= 0;
-      o_wen        <= 0;
+      o_write_data = 0;
+      o_rd_addr    = 0;
+      o_wen        = 0;
    end else if (i_write_on_reg) begin
-      o_write_data <= data_2_write;
-      o_rd_addr    <= i_rd_addr;
-      o_wen        <= i_write_on_reg;
       case (i_wb_sel)
-         1'b0: data_2_write <= i_alu_result;       // Result from ALU/EX
-         1'b1: data_2_write <= i_dmem_data;         // Value read from memory
-         default: data_2_write <= data_2_write;
+         1'b0:    o_write_data = i_alu_result;
+         1'b1:    o_write_data = i_dmem_data;
+         default: o_write_data = i_alu_result;
       endcase
+      o_rd_addr = i_rd_addr;
+      o_wen     = 1'b1;
+   end else begin
+      o_write_data = 0;
+      o_rd_addr    = 0;
+      o_wen        = 1'b0;
    end
 end
 
