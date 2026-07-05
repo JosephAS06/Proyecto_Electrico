@@ -22,6 +22,12 @@ wire        exu_take_jmp;
 
 wire        vec_stall;
 
+// Load-use hazard stall: fire when a load in EXU matches a source reg in the next instruction (in FU)
+wire scalar_stall = exu_dmem_read && (exu_rd_addr != 5'b0) &&
+    ((exu_rd_addr == du_rs1_addr) || (exu_rd_addr == du_rs2_addr));
+// Combined stall for FU and DU
+wire pipeline_stall = vec_stall || scalar_stall;
+
 icache imem (
     .CLK          (clk),
     .rst          (rst),
@@ -37,7 +43,7 @@ icache imem (
 fetch FU (
     .CLK          (clk),
     .RST          (rst),
-    .STALL        (vec_stall),
+    .STALL        (pipeline_stall),
     .i_instruction(imem_instr_out),
     .i_pc         (imem_pc_out),
     .o_pc_imem    (fu_pc_imem),
@@ -91,7 +97,7 @@ decode DU (
     .CLK          (clk),
     .RST          (rst),
     .FLUSH        (1'b0),
-    .STALL        (vec_stall),
+    .STALL        (pipeline_stall),
     .i_instr      (fu_instr),
     .i_pc         (fu_pc),
     .i_bubble     (fu_bubble),
@@ -147,17 +153,41 @@ regFile RF (
     .i_wb_rf_rslt(wb_write_data)
 );
 
-// Pipeline registers: capture RF read data while the current instruction is at
-// the DU stage so that EXU sees aligned data and control signals on the same cycle.
+// Sign-extended forwarding path for load instructions in the MEM stage
+reg  [31:0] fwd_load_data;
+always @(*) begin
+    case (mem_data_size)
+        BYTE: fwd_load_data = mem_is_unsigned ? {24'b0, scalar_rdata[7:0]}  : {{24{scalar_rdata[7]}},  scalar_rdata[7:0]};
+        HALF: fwd_load_data = mem_is_unsigned ? {16'b0, scalar_rdata[15:0]} : {{16{scalar_rdata[15]}}, scalar_rdata[15:0]};
+        default: fwd_load_data = scalar_rdata;
+    endcase
+end
+
+// Data forwarding: select the most recently computed value for each source register
+wire [31:0] fwd_rs1 =
+    (exu_write_on_reg && exu_rd_addr != 5'b0 && exu_rd_addr == du_rs1_addr) ? exu_result :
+    (mem_write_on_reg && mem_rd_addr != 5'b0 && mem_rd_addr == du_rs1_addr) ?
+        (mem_wb_sel[0] ? fwd_load_data : mem_alu_result) :
+    (wb_wen && wb_rd_addr != 5'b0 && wb_rd_addr == du_rs1_addr) ? wb_write_data :
+    rf_rs1_data;
+
+wire [31:0] fwd_rs2 =
+    (exu_write_on_reg && exu_rd_addr != 5'b0 && exu_rd_addr == du_rs2_addr) ? exu_result :
+    (mem_write_on_reg && mem_rd_addr != 5'b0 && mem_rd_addr == du_rs2_addr) ?
+        (mem_wb_sel[0] ? fwd_load_data : mem_alu_result) :
+    (wb_wen && wb_rd_addr != 5'b0 && wb_rd_addr == du_rs2_addr) ? wb_write_data :
+    rf_rs2_data;
+
+// Pipeline registers: capture forwarded data while current instruction is at DU stage
 reg [31:0] du_rs1_data_reg;
 reg [31:0] du_rs2_data_reg;
 always @(posedge clk) begin
     if (rst) begin
         du_rs1_data_reg <= 0;
         du_rs2_data_reg <= 0;
-    end else begin
-        du_rs1_data_reg <= rf_rs1_data;
-        du_rs2_data_reg <= rf_rs2_data;
+    end else if (!pipeline_stall) begin
+        du_rs1_data_reg <= fwd_rs1;
+        du_rs2_data_reg <= fwd_rs2;
     end
 end
 
@@ -171,6 +201,14 @@ wire        exu_dmem_read;
 wire [4:0]  exu_rd_addr;
 wire        exu_write_on_reg;
 
+// Bubble injection: zero control signals when stalling for a load-use hazard
+wire        exu_i_is_branch    = scalar_stall ? 1'b0  : du_is_branch;
+wire        exu_i_dual_op      = scalar_stall ? 1'b0  : du_dual_op;
+wire        exu_i_dmem_write   = scalar_stall ? 1'b0  : du_dmem_write;
+wire        exu_i_dmem_read    = scalar_stall ? 1'b0  : du_dmem_read;
+wire [4:0]  exu_i_rd_addr      = scalar_stall ? 5'b0  : du_rd_addr;
+wire        exu_i_write_on_reg = scalar_stall ? 1'b0  : du_write_on_reg;
+
 exu EXU (
     .CLK          (clk),
     .RST          (rst),
@@ -180,16 +218,16 @@ exu EXU (
     .i_imm        (du_imm),
     .i_is_unsigned(du_is_unsigned),
     .i_rs1_2_pc   (du_rs1_2_pc),
-    .i_is_branch  (du_is_branch),
+    .i_is_branch  (exu_i_is_branch),
     .i_is_type_u  (du_is_type_u),
-    .i_dual_op    (du_dual_op),
+    .i_dual_op    (exu_i_dual_op),
     .i_data_size  (du_data_size),
     .i_alu_op     (du_alu_op),
     .i_alu_src_rs2(du_alu_src_rs2),
-    .i_dmem_write (du_dmem_write),
-    .i_dmem_read  (du_dmem_read),
-    .i_rd_addr    (du_rd_addr),
-    .i_write_on_reg(du_write_on_reg),
+    .i_dmem_write (exu_i_dmem_write),
+    .i_dmem_read  (exu_i_dmem_read),
+    .i_rd_addr    (exu_i_rd_addr),
+    .i_write_on_reg(exu_i_write_on_reg),
     .o_pc_upd     (exu_pc_upd),
     .o_take_br    (exu_take_br),
     .o_take_jmp   (exu_take_jmp),
