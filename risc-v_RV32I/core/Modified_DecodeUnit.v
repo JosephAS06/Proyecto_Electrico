@@ -410,9 +410,14 @@ always @(posedge CLK) begin
          else o_imm <= i_imm;                                    // General type I immeadiate
       end
 
-      // [VEC] Default: no vector instruction active this cycle
-      o_vec_valid     <= 1'b0;
-      o_vec_lsu_valid <= 1'b0;
+      // [VEC] Default: no vector instruction active this cycle; clear LSU flags to prevent stale state
+      o_vec_valid      <= 1'b0;
+      o_vec_lsu_valid  <= 1'b0;
+      o_vec_is_load    <= 1'b0;
+      o_vec_is_store   <= 1'b0;
+      o_vec_is_mask_op <= 1'b0;
+      o_vec_is_strided <= 1'b0;
+      o_vec_is_indexed <= 1'b0;
 
       // For each instruction
       if (is_typeR) begin
