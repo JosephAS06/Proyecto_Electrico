@@ -12,9 +12,9 @@ RTL_ALL     = $(RTL_ALU) $(RTL_REG) $(RTL_PIPE) $(RTL_LSU) $(RTL_TOP)
 RTL_SCALAR  = risc-v_RV32I/core/FetchUnit.v risc-v_RV32I/core/RegisterFile.v risc-v_RV32I/memory/ICache.v risc-v_RV32I/core/ExecuteUnit.v risc-v_RV32I/core/MemoryUnit.v risc-v_RV32I/core/WriteBack.v risc-v_RV32I/core/Modified_DecodeUnit.v
 RTL_INTEGRATED = $(RTL_ALL) $(RTL_SCALAR) risc-v_RV32I/memory/DCache.v rtl_ve/ve_integrated.v
 
-.PHONY: all tb_alu tb_vregfile tb_ve_top tb_vlsu_integration tb_ve_integrated tb_scalar_perf tb_vector_perf clean
+.PHONY: all tb_alu tb_vregfile tb_ve_top tb_vlsu_integration tb_ve_integrated tb_scalar_perf tb_scalar_fwd tb_vector_perf tb_scalar_n8 tb_vector_n8 clean
 
-all: tb_alu tb_vregfile tb_ve_top tb_vlsu_integration tb_ve_integrated tb_scalar_perf tb_vector_perf
+all: tb_alu tb_vregfile tb_ve_top tb_vlsu_integration tb_ve_integrated tb_scalar_perf tb_scalar_fwd tb_vector_perf tb_scalar_n8 tb_vector_n8
 
 tb_alu:
 	$(IVERILOG) $(FLAGS) -o sim_alu $(RTL_ALU) testbench/tb_alu.v
@@ -46,10 +46,25 @@ tb_scalar_perf:
 	$(VVP) sim_scalar_perf
 	@echo "Waveform: gtkwave tb_scalar_perf.vcd"
 
+tb_scalar_fwd:
+	$(IVERILOG) $(FLAGS) -o sim_scalar_fwd $(RTL_INTEGRATED) testbench/tb_scalar_fwd.v
+	$(VVP) sim_scalar_fwd
+	@echo "Waveform: gtkwave tb_scalar_fwd.vcd"
+
 tb_vector_perf:
 	$(IVERILOG) $(FLAGS) -o sim_vector_perf $(RTL_INTEGRATED) testbench/tb_vector_perf.v
 	$(VVP) sim_vector_perf
 	@echo "Waveform: gtkwave tb_vector_perf.vcd"
+
+tb_scalar_n8:
+	$(IVERILOG) $(FLAGS) -o sim_scalar_n8 $(RTL_INTEGRATED) testbench/tb_scalar_n8.v
+	$(VVP) sim_scalar_n8
+	@echo "Waveform: gtkwave tb_scalar_n8.vcd"
+
+tb_vector_n8:
+	$(IVERILOG) $(FLAGS) -o sim_vector_n8 $(RTL_INTEGRATED) testbench/tb_vector_n8.v
+	$(VVP) sim_vector_n8
+	@echo "Waveform: gtkwave tb_vector_n8.vcd"
 
 clean:
 	rm -f sim* *.vcd
