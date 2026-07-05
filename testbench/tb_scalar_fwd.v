@@ -1,8 +1,71 @@
+// =============================================================================
+// Módulo: tb_scalar_fwd
+// Archivo: testbench/tb_scalar_fwd.v
+//
+// Descripción:
+//   Banco de pruebas de rendimiento para el pipeline RISC-V RV32I escalar
+//   CON forwarding de datos, ejecutando la suma elemento a elemento de dos
+//   arreglos de N=4 elementos: C[i] = A[i] + B[i] para i = 0..3.
+//
+//   Este banco de pruebas representa el pipeline OPTIMIZADO: aprovecha los
+//   caminos de reenvío (EX->EX, MEM->EX, WB->EX) y la detección de hazards
+//   load-use para eliminar los NOPs conservadores del programa de referencia
+//   (tb_scalar_perf.v). El programa queda reducido a solo 18 instrucciones
+//   útiles + padding, alcanzando ~23 ciclos vs. ~59 ciclos sin forwarding.
+//
+// Caminos de forwarding utilizados en este programa:
+//
+//   WB->EX: los ADD usan operandos cargados 8 y 4 instrucciones antes.
+//     Cuando el ADD entra a Execute, los LW ya pasaron WB y el resultado
+//     está en el banco de registros. No se necesita forwarding activo;
+//     la lectura desde RF es suficiente.
+//
+//   Sin load-use stall: los ADD están 8 (x1) y 4 (x5) instrucciones
+//     después de sus LW fuente. El pipeline escalar detectaría load-use
+//     solo si el ADD está 1 instrucción después del LW (0-NOP case).
+//     En este programa todos los ADD están suficientemente separados.
+//
+// Problema que resuelve:
+//   Suma elemento a elemento de arreglos de 4 palabras de 32 bits:
+//     A[0..3] = {10, 20, 30, 40}  -> DCache pos0..pos3 (byte addr 0..12)
+//     B[0..3] = {50, 60, 70, 80}  -> DCache pos4..pos7 (byte addr 16..28)
+//     C[0..3] = {60, 80, 100, 120} -> escritos en pos8..pos11 (byte addr 32..44)
+//
+// Programa optimizado (18 instrucciones útiles, 0 NOPs en el camino crítico):
+//
+//   [0]  addi x20, x0, 0    — sentinel init
+//   [1]  lw x1, 0(x0)       — A[0]
+//   [2]  lw x2, 4(x0)       — A[1]
+//   [3]  lw x3, 8(x0)       — A[2]
+//   [4]  lw x4, 12(x0)      — A[3]
+//   [5]  lw x5, 16(x0)      — B[0]
+//   [6]  lw x6, 20(x0)      — B[1]
+//   [7]  lw x7, 24(x0)      — B[2]
+//   [8]  lw x8, 28(x0)      — B[3]
+//
+//   [9]  add x9,  x1, x5    — C[0]=60  (x1: 8 atrás, x5: 4 atrás → en RF)
+//   [10] add x10, x2, x6    — C[1]=80
+//   [11] add x11, x3, x7    — C[2]=100
+//   [12] add x12, x4, x8    — C[3]=120
+//
+//   [13] sw x9,  32(x0)     — C[0] -> dmem[8]  (x9: 4 atrás → en RF)
+//   [14] sw x10, 36(x0)     — C[1] -> dmem[9]
+//   [15] sw x11, 40(x0)     — C[2] -> dmem[10]
+//   [16] sw x12, 44(x0)     — C[3] -> dmem[11]
+//   [17] addi x20, x0, 1   — DONE sentinel
+//   [18..63] NOP×46          — padding hasta 64 instrucciones
+//
+//
+// Resultado esperado (comparación de rendimiento):
+//   tb_scalar_perf.v (sin fwd): ~59 ciclos para N=4
+//   tb_scalar_fwd.v  (con fwd): ~23 ciclos para N=4
+//   Factor de aceleración:      ~2.6× para N=4
+//   tb_scalar_n8.v   (con fwd): ~39 ciclos para N=8
+//   Factor de aceleración N=8:  proporcional a la reducción de NOPs
+//
+// =============================================================================
+
 `timescale 1ns/1ps
-// Scalar performance testbench with forwarding: C[i] = A[i] + B[i] for i = 0..3
-// Uses the EX/MEM/WB forwarding paths to eliminate NOPs between
-// consecutive independent loads, and between load/add/store groups.
-// Same data and expected results as tb_scalar_perf.v, shorter program.
 module tb_scalar_fwd;
 
 reg        clk;
@@ -17,6 +80,7 @@ integer    fail_count;
 
 localparam MAX_CYCLES = 200;
 
+// Instancia del sistema completo bajo prueba
 ve_integrated dut (
     .clk        (clk),
     .rst        (rst),
@@ -28,10 +92,15 @@ ve_integrated dut (
 initial clk = 0;
 always #5 clk = ~clk;
 
+// Contador de ciclos desde la desactivación del reset
 always @(posedge clk)
     if (rst) cycle_count <= 0;
     else     cycle_count <= cycle_count + 1;
 
+// -------------------------------------------------------------------------
+// Tarea: check
+//   Compara un valor de 32 bits y acumula PASS/FAIL.
+// -------------------------------------------------------------------------
 task check;
     input [31:0]  got;
     input [31:0]  exp;
@@ -61,20 +130,20 @@ initial begin
     @(posedge clk); #1;
     @(posedge clk); #1;
 
-    // ----------------------------------------------------------------
-    // Optimised program exploiting forwarding (0 NOPs):
-    //   Memory layout (dmem word index → byte addr):
-    //     pos0..pos3  ( 0..12): A = {10, 20, 30, 40}
-    //     pos4..pos7  (16..28): B = {50, 60, 70, 80}
-    //   Results:
-    //     pos8..pos11 (32..44): C = {60, 80, 100, 120}
+    // =========================================================================
+    // Programa optimizado con forwarding (0 NOPs en el camino crítico):
     //
-    // All 8 loads are independent — no NOPs between them.
-    // Adds are 4-8 instructions after their load sources — RF has the
-    // value; no forwarding or stall needed.
-    // Stores are 4-7 instructions after the adds — RF has the value.
-    // Total: 18 instructions, 0 padding NOPs in the critical path.
-    // ----------------------------------------------------------------
+    // Layout de memoria (dmem word index -> byte addr):
+    //   pos0..pos3  ( 0..12): A = {10, 20, 30, 40}
+    //   pos4..pos7  (16..28): B = {50, 60, 70, 80}
+    // Resultados:
+    //   pos8..pos11 (32..44): C = {60, 80, 100, 120}
+    //
+    // Los 8 LW son independientes -> no hay NOPs entre ellos.
+    // Los ADD están 4-8 instrucciones después de sus LW -> el RF tiene el valor.
+    // Los SW están 4-7 instrucciones después de los ADD -> el RF tiene el valor.
+    // Total: 18 instrucciones útiles, 0 NOPs de relleno en el camino crítico.
+    // =========================================================================
     i_imem_wen = 1;
 
     // [0]  addi x20, x0, 0    — sentinel init
@@ -95,7 +164,7 @@ initial begin
     i_imem_addr =  7; i_imem_data = 32'h01802383; @(posedge clk); #1;
     // [8]  lw x8, 28(x0)      — B[3]
     i_imem_addr =  8; i_imem_data = 32'h01C02403; @(posedge clk); #1;
-    // [9]  add x9, x1, x5     — C[0] = 60  (x1 8-back, x5 4-back: both in RF)
+    // [9]  add x9, x1, x5     — C[0] = 60  (x1: 8 antes, x5: 4 antes -> en RF)
     i_imem_addr =  9; i_imem_data = 32'h005084B3; @(posedge clk); #1;
     // [10] add x10, x2, x6    — C[1] = 80
     i_imem_addr = 10; i_imem_data = 32'h00610533; @(posedge clk); #1;
@@ -103,7 +172,7 @@ initial begin
     i_imem_addr = 11; i_imem_data = 32'h007185B3; @(posedge clk); #1;
     // [12] add x12, x4, x8    — C[3] = 120
     i_imem_addr = 12; i_imem_data = 32'h00820633; @(posedge clk); #1;
-    // [13] sw x9,  32(x0)     — C[0] → dmem[8]  (x9 4-back: in RF)
+    // [13] sw x9,  32(x0)     — C[0] → dmem[8]  (x9: 4 antes -> en RF)
     i_imem_addr = 13; i_imem_data = 32'h02902023; @(posedge clk); #1;
     // [14] sw x10, 36(x0)     — C[1] → dmem[9]
     i_imem_addr = 14; i_imem_data = 32'h02A02223; @(posedge clk); #1;
@@ -113,7 +182,7 @@ initial begin
     i_imem_addr = 16; i_imem_data = 32'h02C02623; @(posedge clk); #1;
     // [17] addi x20, x0, 1    — DONE sentinel
     i_imem_addr = 17; i_imem_data = 32'h00100A13; @(posedge clk); #1;
-    // [18..63] NOP padding
+    // [18..63] NOP padding (relleno hasta completar 64 instrucciones)
     begin : fill
         integer k;
         for (k = 18; k < 64; k = k + 1) begin
@@ -126,6 +195,7 @@ initial begin
     @(posedge clk); #1;
     @(posedge clk); #1;
 
+    // Desactivar reset y pre-cargar datos en el DCache
     rst = 0;
     dut.dmem.pos0 = 32'd10;   // A[0]
     dut.dmem.pos1 = 32'd20;   // A[1]
@@ -137,6 +207,7 @@ initial begin
     dut.dmem.pos7 = 32'd80;   // B[3]
 end
 
+// Monitor: detectar condición de finalización o timeout
 always @(posedge clk) begin
     if (!rst) begin
         if (dut.RF.x20 === 32'd1) begin
@@ -144,10 +215,12 @@ always @(posedge clk) begin
             $display("=== SCALAR+FWD N=4: %0d cycles ===", cycle_count);
             $display("");
 
+            // Verificar sumas en registros enteros
             check(dut.RF.x9,      32'd60,  "           x9  = 60  (A[0]+B[0])");
             check(dut.RF.x10,     32'd80,  "           x10 = 80  (A[1]+B[1])");
             check(dut.RF.x11,     32'd100, "           x11 = 100 (A[2]+B[2])");
             check(dut.RF.x12,     32'd120, "           x12 = 120 (A[3]+B[3])");
+            // Verificar que los SW escribieron al DCache
             check(dut.dmem.pos8,  32'd60,  "           dmem[8]  = 60  (C[0])");
             check(dut.dmem.pos9,  32'd80,  "           dmem[9]  = 80  (C[1])");
             check(dut.dmem.pos10, 32'd100, "           dmem[10] = 100 (C[2])");
