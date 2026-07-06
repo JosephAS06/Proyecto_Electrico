@@ -14,7 +14,7 @@
 //
 // Ventana de peligro:
 //   La hazard unit observa las 3 instrucciones más recientes en el pipeline
-//   (s1, s2, s3 = Issue→Execute, Execute→MEM, MEM→WB respectivamente).
+//   (s1, s2, s3 = Issue->Execute, Execute->MEM, MEM->WB respectivamente).
 //   Si cualquiera de ellas escribe un registro que la instrucción entrante
 //   necesita leer, se activa o_raw_stall.
 //
@@ -42,9 +42,9 @@
 //   i_is_store    — indica que i_rd es realmente vs3 (fuente, no destino)
 //   i_rd          — registro destino (o vs3 si i_is_store)
 //
-//   i_s1_valid, i_s1_rd, i_s1_is_store — instrucción en etapa Issue→Execute
-//   i_s2_valid, i_s2_rd, i_s2_is_store — instrucción en etapa Execute→MEM
-//   i_s3_valid, i_s3_rd, i_s3_is_store — instrucción en etapa MEM→WB
+//   i_s1_valid, i_s1_rd, i_s1_is_store — instrucción en etapa Issue->Execute
+//   i_s2_valid, i_s2_rd, i_s2_is_store — instrucción en etapa Execute->MEM
+//   i_s3_valid, i_s3_rd, i_s3_is_store — instrucción en etapa MEM->WB
 //
 // Señal de salida:
 //   o_raw_stall — se activa cuando se detecta un hazard. La etapa Issue
@@ -53,7 +53,7 @@
 //
 // Flujo de detección:
 //
-//   s1_writes = s1_valid && !s1_is_store  → s1 produce un resultado al VRF
+//   s1_writes = s1_valid && !s1_is_store  -> s1 produce un resultado al VRF
 //   s2_writes = s2_valid && !s2_is_store
 //   s3_writes = s3_valid && !s3_is_store
 //
@@ -81,38 +81,33 @@ module hazard_unit (
     input         i_s2_valid,
     input  [4:0]  i_s2_rd,
     input         i_s2_is_store,
+    input         i_s2_is_load,  // s2 es carga: ACCESS_23 aún pendiente
 
     // Estado de la instrucción en etapa MEM->WB (s3)
     input         i_s3_valid,
     input  [4:0]  i_s3_rd,
     input         i_s3_is_store,
 
-    output        o_raw_stall   // 1 -> insertar burbuja en Issue
+    output        o_raw_stall
 );
-    // Una instrucción "escribe" al VRF si es válida y NO es un store
-    // (los stores escriben a memoria, no al VRF)
+    // Una instrucción produce resultado al VRF si es válida y no es store
     wire s1_writes = i_s1_valid && !i_s1_is_store;
     wire s2_writes = i_s2_valid && !i_s2_is_store;
-    wire s3_writes = i_s3_valid && !i_s3_is_store;
 
-    // Hazard en rs1: alguna instrucción en pipeline escribe el registro que rs1 necesita
+    // Con forwarding desde s2 (no-load) y s3 (cualquier resultado completo):
+    // - s1: sin resultado todavía -> stall siempre
+    // - s2 no-load: resultado listo -> forwarding, no stall
+    // - s2 load: solo ACCESS_01 completo, ACCESS_23 pendiente -> stall
+    // - s3: resultado completo disponible -> forwarding, no stall
     wire rs1_haz = (s1_writes && i_s1_rd == i_rs1) ||
-                   (s2_writes && i_s2_rd == i_rs1) ||
-                   (s3_writes && i_s3_rd == i_rs1);
+                   (s2_writes && i_s2_is_load && i_s2_rd == i_rs1);
 
-    // Hazard en rs2: análogo para el segundo operando fuente
     wire rs2_haz = (s1_writes && i_s1_rd == i_rs2) ||
-                   (s2_writes && i_s2_rd == i_rs2) ||
-                   (s3_writes && i_s3_rd == i_rs2);
+                   (s2_writes && i_s2_is_load && i_s2_rd == i_rs2);
 
-    // Hazard en el dato de un store: si la instrucción entrante es un store,
-    // i_rd es vs3 (la fuente de datos). Se necesita que vs3 esté actualizado
-    // antes de que el store acceda al VRF.
     wire rd_haz  = i_is_store && (
                    (s1_writes && i_s1_rd == i_rd) ||
-                   (s2_writes && i_s2_rd == i_rd) ||
-                   (s3_writes && i_s3_rd == i_rd));
+                   (s2_writes && i_s2_is_load && i_s2_rd == i_rd));
 
-    // Activa stall solo si la instrucción entrante es válida y hay al menos un hazard
     assign o_raw_stall = i_valid && (rs1_haz || rs2_haz || rd_haz);
 endmodule

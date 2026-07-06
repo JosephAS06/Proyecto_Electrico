@@ -12,6 +12,7 @@
 //   pre-decodificadas desde Modified_DecodeUnit y accede al DCache externo
 //   a través de una interfaz de doble puerto.
 //
+//
 // Banco de Registros Vectoriales (VRF):
 //   32 registros de 128 bits, con 4 puertos de lectura y 1 de escritura.
 //   Las lecturas son combinacionales; la escritura es sincrónica (en WB).
@@ -51,12 +52,12 @@
 //
 //   Ciclo 1 (Issue):
 //     - i_rs1 -> o_addr_a al VRF (lectura del registro con base_addr)
-//     - Datos propagados al registro Issue->Execute
+//     - Datos propagados al registro Issue→Execute
 //
 //   Ciclo 2 (Execute):
 //     - VLSU fase 00 genera addr_0, addr_1 -> DCache
 //     - DCache devuelve rdata[0], rdata[1]
-//     - Se captura {rdata[1], rdata[0]} en o_asm_lo -> registro EX→MEM
+//     - Se captura {rdata[1], rdata[0]} en o_asm_lo -> registro EX->MEM
 //
 //   Ciclo 3 (MEM):
 //     - VLSU fase 01 genera addr_2, addr_3 -> DCache
@@ -162,12 +163,12 @@ module ve_top (
     wire [4:0]  s1_rd,      s2_rd;
     wire [127:0] s1_vs1_data, s1_vs2_data;
     wire [127:0] s1_result,   s2_result;
-    // Campos LSU de la etapa s1 (Issue→Execute)
+    // Campos LSU de la etapa s1 (Issue->Execute)
     wire        s1_is_load,    s1_is_store,    s1_is_mask_op;
     wire        s1_is_strided, s1_is_indexed;
     wire [31:0] s1_base_addr,  s1_stride;
     wire [127:0] s1_vs3_data,  s1_offset_buf;
-    // Campos LSU de la etapa s2 (Execute→MEM)
+    // Campos LSU de la etapa s2 (Execute->MEM)
     wire        s2_is_load,    s2_is_store,    s2_is_mask_op;
     wire        s2_is_strided, s2_is_indexed;
     wire [31:0] s2_base_addr,  s2_stride;
@@ -195,7 +196,9 @@ module ve_top (
 
     hazard_unit hu (
         .i_valid      (i_alu_valid || i_lsu_valid),
-        .i_rs1        (i_rs1),
+        // Para instrucciones LSU, i_rs1 es un registro escalar (base addr), no vectorial.
+        // Pasar 5'b0 evita falsos hazards contra registros vectoriales en el pipeline.
+        .i_rs1        (i_lsu_valid ? 5'b0 : i_rs1),
         .i_rs2        (i_rs2),
         .i_is_store   (i_is_store),
         .i_rd         (i_rd),
@@ -206,6 +209,7 @@ module ve_top (
         .i_s2_valid   (s2_valid),
         .i_s2_rd      (s2_rd),
         .i_s2_is_store(s2_is_store),
+        .i_s2_is_load (s2_is_load),
         .i_s3_valid   (s3_valid),
         .i_s3_rd      (s3_rd),
         .i_s3_is_store(s3_is_store),
@@ -250,6 +254,32 @@ module ve_top (
     // Pipeline vectorial: Issue -> Execute -> MEM -> Writeback
     // =========================================================================
 
+    // -------------------------------------------------------------------------
+    // Forwarding vectorial: s2 (ALU no-load) y s3 -> entrada de Issue
+    //
+    // Reglas:
+    //  - s2 ALU (no-load, no-store): resultado completo disponible -> forward
+    //  - s2 load: solo ACCESS_01 completo en s2; ACCESS_23 llega en s3 -> no forward
+    //  - s3 cualquier resultado: completo -> forward
+    //  - Las instrucciones LSU usan i_rs1 como dirección escalar, no vectorial;
+    //    el guard !i_lsu_valid evita falsas coincidencias con registros vectoriales.
+    // -------------------------------------------------------------------------
+    wire [127:0] fwd_vs1 =
+        (!i_lsu_valid && s2_valid && !s2_is_store && !s2_is_load && s2_rd != 5'b0 && s2_rd == i_rs1) ? s2_result :
+        (!i_lsu_valid && s3_valid && !s3_is_store && s3_rd != 5'b0 && s3_rd == i_rs1) ? s3_result :
+        data_a;
+
+    wire [127:0] fwd_vs2 =
+        (!i_lsu_valid && s2_valid && !s2_is_store && !s2_is_load && s2_rd != 5'b0 && s2_rd == i_rs2) ? s2_result :
+        (!i_lsu_valid && s3_valid && !s3_is_store && s3_rd != 5'b0 && s3_rd == i_rs2) ? s3_result :
+        data_b;
+
+    // vs3 es siempre un registro vectorial (presente solo en stores vectoriales)
+    wire [127:0] fwd_vs3 =
+        (i_is_store && s2_valid && !s2_is_store && !s2_is_load && s2_rd != 5'b0 && s2_rd == i_rd) ? s2_result :
+        (i_is_store && s3_valid && !s3_is_store && s3_rd != 5'b0 && s3_rd == i_rd) ? s3_result :
+        data_c;
+
     // Etapa 1: Issue — captura la instrucción y lee el VRF
     issue stage1 (
         .clk          (clk),
@@ -264,8 +294,8 @@ module ve_top (
         .i_rd         (i_rd),
         .i_is_vx      (i_is_vx),
         .i_scalar     (i_scalar),
-        .i_vs1_data   (data_a),       // datos leídos del VRF puerto A
-        .i_vs2_data   (data_b),       // datos leídos del VRF puerto B
+        .i_vs1_data   (fwd_vs1),      // vs1 con forwarding desde s2/s3
+        .i_vs2_data   (fwd_vs2),      // vs2 con forwarding desde s2/s3
         .i_lsu_valid  (i_lsu_valid),
         .i_is_load    (i_is_load),
         .i_is_store   (i_is_store),
@@ -274,7 +304,7 @@ module ve_top (
         .i_is_indexed (i_is_indexed),
         .i_base_addr  (i_base_addr),
         .i_stride     (i_stride),
-        .i_vs3_data   (data_c),       // datos para store (VRF puerto C)
+        .i_vs3_data   (fwd_vs3),      // vs3 con forwarding desde s2/s3 (para stores)
         .i_offset_data(data_d),       // offsets indexed (VRF puerto D)
         // Direcciones de lectura al VRF (combinacionales)
         .o_addr_a     (addr_a),

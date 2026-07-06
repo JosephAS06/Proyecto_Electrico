@@ -38,9 +38,10 @@
 module icache #(
      parameter ADDR_WIDTH = 32,                   // Default value of address width
      parameter DATA_WIDTH = 32                    // Default value of data width (word)
-    
-)(    
+
+)(
     input wire CLK, rst, i_we,                   // Clock and WriteEnable
+    input wire i_stall,                          // Hold output when pipeline is stalled
     input wire [ADDR_WIDTH-1:0] i_tester_addr,   // Address to be accessed
     input wire [ADDR_WIDTH-1:0] i_addr,          // Address to be accessed
     input wire [ADDR_WIDTH-1:0] i_pc,            // PC to buffer coming from the FU
@@ -392,10 +393,10 @@ module icache #(
     reg [DATA_WIDTH-1:0] pos309;
 
     always @(posedge CLK) begin
-        
+
         if (rst) begin
-            o_pc <= 0;    
-        end else begin
+            o_pc <= 0;
+        end else if (!i_stall) begin
             o_pc <= i_pc;
         end
 
@@ -746,8 +747,8 @@ module icache #(
                 default : o_instr <= 0;
             endcase
 
-        end else begin
-            
+        end else if (!i_stall) begin
+
             case (i_addr)
                 32'd0   :  o_instr <= pos0;
                 32'd1   :  o_instr <= pos1;
