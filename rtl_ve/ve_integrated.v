@@ -126,7 +126,7 @@ wire [31:0] fu_instr;   // instrucción decodificada por FU (puede ser burbuja)
 wire [31:0] fu_pc;      // PC correspondiente a la instrucción en FU
 wire        fu_bubble;  // indica que fu_instr es una burbuja (NOP por branch/stall)
 
-// Señales de control de flujo de EXU -> FU (para branches y jumps)
+// Señales de control de flujo de EXU → FU (para branches y jumps)
 wire [31:0] exu_pc_upd;   // dirección de salto calculada por EXU
 wire        exu_take_br;  // EXU indica tomar un branch
 wire        exu_take_jmp; // EXU indica tomar un jump (JAL/JALR)
@@ -151,6 +151,7 @@ icache imem (
     .CLK          (clk),
     .rst          (rst),
     .i_we         (i_imem_wen),             // escritura del testbench durante reset
+    .i_stall      (pipeline_stall),         // hold output when pipeline stalled
     .i_tester_addr(i_imem_addr),            // dirección de escritura (word-indexed)
     .i_addr       ({2'b0, fu_pc_imem[31:2]}), // dirección de lectura (de FU, word-indexed)
     .i_pc         (fu_pc_imem),
@@ -308,7 +309,7 @@ regFile RF (
 // en el siguiente ciclo de forma sincrónica.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Extensión en signo del dato del DCache para el forwarding MEM->EX
+// Extensión en signo del dato del DCache para el forwarding MEM→EX
 reg  [31:0] fwd_load_data;
 always @(*) begin
     case (mem_data_size)
@@ -320,12 +321,12 @@ end
 
 // Mux de forwarding para rs1: selecciona el valor más reciente disponible
 wire [31:0] fwd_rs1 =
-    // EX->EX: el resultado de EXU (instrucción que está en MEM en el siguiente ciclo)
+    // EX→EX: el resultado de EXU (instrucción que está en MEM en el siguiente ciclo)
     (exu_write_on_reg && exu_rd_addr != 5'b0 && exu_rd_addr == du_rs1_addr) ? exu_result :
-    // MEM->EX: el resultado de mem_unit (puede ser de ALU o de carga del DCache)
+    // MEM→EX: el resultado de mem_unit (puede ser de ALU o de carga del DCache)
     (mem_write_on_reg && mem_rd_addr != 5'b0 && mem_rd_addr == du_rs1_addr) ?
         (mem_wb_sel[0] ? fwd_load_data : mem_alu_result) :
-    // WB->EX: el dato que WB está por escribir al RF
+    // WB→EX: el dato que WB está por escribir al RF
     (wb_wen && wb_rd_addr != 5'b0 && wb_rd_addr == du_rs1_addr) ? wb_write_data :
     // Sin forwarding: lectura normal del RF
     rf_rs1_data;
@@ -337,6 +338,16 @@ wire [31:0] fwd_rs2 =
         (mem_wb_sel[0] ? fwd_load_data : mem_alu_result) :
     (wb_wen && wb_rd_addr != 5'b0 && wb_rd_addr == du_rs2_addr) ? wb_write_data :
     rf_rs2_data;
+
+// Forwarding de la dirección base vectorial (rs1 de vle32/vse32)
+// Misma lógica que fwd_rs1: el rs1 escalar actúa como registro base del LSU vectorial.
+// Permite que addi+vle32/vse32 sean instrucciones consecutivas sin NOPs intermedios.
+wire [31:0] fwd_vec_base_addr =
+    (exu_write_on_reg && exu_rd_addr != 5'b0 && exu_rd_addr == du_vec_rs1) ? exu_result :
+    (mem_write_on_reg && mem_rd_addr != 5'b0 && mem_rd_addr == du_vec_rs1) ?
+        (mem_wb_sel[0] ? fwd_load_data : mem_alu_result) :
+    (wb_wen && wb_rd_addr != 5'b0 && wb_rd_addr == du_vec_rs1) ? wb_write_data :
+    du_vec_base_addr;
 
 // Registros de pipeline: capturan el operando seleccionado al final de DU
 // Se congelan durante stalls (scalar_stall o vec_stall) para preservar el
@@ -376,7 +387,7 @@ wire        exu_write_on_reg;  // EXU produce un resultado que va al RF
 //
 // La instrucción en DU se queda "quieta" (FU y DU se congelan) mientras
 // el lw avanza de EXU a mem_unit. En el siguiente ciclo, fwd_load_data
-// ya tiene el dato correcto y el forwarding MEM->EX resuelve la dependencia.
+// ya tiene el dato correcto y el forwarding MEM→EX resuelve la dependencia.
 // ─────────────────────────────────────────────────────────────────────────────
 wire        exu_i_is_branch    = scalar_stall ? 1'b0  : du_is_branch;
 wire        exu_i_dual_op      = scalar_stall ? 1'b0  : du_dual_op;
@@ -432,7 +443,7 @@ wire [3:0]  mem_byte_en;
 wire [1:0]  mem_data_size;    // tamaño del acceso (para extensión en signo en WB)
 wire        mem_is_unsigned;
 
-wire [31:0] mem_alu_result;   // resultado ALU propagado de EXU (para forwarding MEM->EX)
+wire [31:0] mem_alu_result;   // resultado ALU propagado de EXU (para forwarding MEM→EX)
 wire [4:0]  mem_rd_addr;
 wire [1:0]  mem_wb_sel;       // selección de fuente en WB: 00=ALU, 01=DCache
 wire        mem_write_on_reg;
@@ -452,7 +463,7 @@ mem_unit mem0 (
     .i_dmem_write (exu_dmem_write),
     .i_dmem_read  (exu_dmem_read),
     .i_write_on_reg(exu_write_on_reg),
-    .o_alu_result (mem_alu_result),   // propagado para forwarding MEM->EX
+    .o_alu_result (mem_alu_result),   // propagado para forwarding MEM→EX
     .o_rd_addr    (mem_rd_addr),
     .o_wb_sel     (mem_wb_sel),
     .o_data_size  (mem_data_size),
@@ -597,7 +608,7 @@ ve_top vext (
     .i_is_mask_op     (du_vec_is_mask_op),
     .i_is_strided     (du_vec_is_strided),
     .i_is_indexed     (du_vec_is_indexed),
-    .i_base_addr      (du_vec_base_addr),  // nota: sin forwarding desde RF escalar
+    .i_base_addr      (fwd_vec_base_addr), // con forwarding EX->EX/MEM->EX/WB->EX
     .i_stride         (du_vec_stride),
     .o_stall          (vec_stall),         // congela FU+DU mientras opera
     // Puerto A del DCache (compartido, controlado por mux arriba)
